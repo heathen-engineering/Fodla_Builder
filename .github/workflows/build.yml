@@ -1,0 +1,52 @@
+name: macOS build
+
+# Manual only — no push/PR/schedule trigger. Nothing here ever builds unless
+# someone (or our own tooling, via the same workflow_dispatch API) explicitly
+# asks for this exact repo/ref. Codeberg stays the source of truth; this repo
+# exists purely to reach a macOS compiler, nothing is authoritative here.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Codeberg repo path, e.g. Heathen-Engineering/Godot-GameplayTags-Foundation"
+        required: true
+      ref:
+        description: "Git tag or branch to build"
+        required: true
+      addon_dir:
+        description: "Path to the CMakeLists.txt directory, relative to repo root (e.g. addons/GameplayTagsFoundation, or . for a flat-layout repo like Game-Framework)"
+        required: true
+        default: "."
+
+jobs:
+  build-macos:
+    runs-on: macos-14
+    steps:
+      - name: Clone source from Codeberg
+        run: |
+          git clone --branch "${{ inputs.ref }}" --depth 1 --recurse-submodules \
+            "https://codeberg.org/${{ inputs.repo }}.git" source
+
+      - name: Configure
+        working-directory: source/${{ inputs.addon_dir }}
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
+
+      - name: Build
+        working-directory: source/${{ inputs.addon_dir }}
+        run: cmake --build build --config Release
+
+      - name: Collect binaries
+        working-directory: source/${{ inputs.addon_dir }}
+        run: |
+          mkdir -p "${GITHUB_WORKSPACE}/artifacts"
+          find build -name "*.dylib" -o -name "*.a" | while read -r f; do
+            cp "$f" "${GITHUB_WORKSPACE}/artifacts/"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: macos-build
+          path: artifacts/
+          if-no-files-found: error
