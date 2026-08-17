@@ -41,9 +41,20 @@ jobs:
         working-directory: source/${{ inputs.addon_dir }}
         run: |
           mkdir -p "${GITHUB_WORKSPACE}/artifacts"
-          find build -name "*.dylib" -o -name "*.a" | while read -r f; do
-            cp "$f" "${GITHUB_WORKSPACE}/artifacts/"
-          done
+          # CMake links the real product output into a project-defined bin/
+          # folder at the addon root (LIBRARY_OUTPUT_DIRECTORY), a SIBLING of
+          # build/, not inside it — searching only "build" silently misses
+          # the real .dylib and picks up godot-cpp's own intermediate static
+          # lib from build/godot-cpp instead (confirmed the hard way against
+          # a real run: job succeeded, artifact uploaded, but it was
+          # libgodot-cpp's own .a, not the actual product). Search both.
+          find . -maxdepth 6 \( -name "*.dylib" -o -name "*.a" \) 2>/dev/null \
+            | grep -v '/build/godot-cpp/' \
+            | sort -u \
+            | while read -r f; do
+                cp "$f" "${GITHUB_WORKSPACE}/artifacts/"
+              done
+          ls -la "${GITHUB_WORKSPACE}/artifacts/"
 
       - uses: actions/upload-artifact@v4
         with:
