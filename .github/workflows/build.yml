@@ -28,6 +28,10 @@ on:
       addon_name:
         description: "Real addon folder name once installed (e.g. GameFrameworkFoundation) — NOT derived from addon_dir, since a flat-layout repo's addon_dir is just \".\""
         required: true
+      fetch_steam_sdk:
+        description: "Fetch the Steamworks SDK before configuring (only Foundation for Steamworks needs this — the SDK is Valve-licensed, never committed, fetched from the private steamworks-sdk-vendor repo)"
+        required: false
+        default: "false"
 
 jobs:
   build:
@@ -44,6 +48,24 @@ jobs:
         run: |
           git clone --branch "${{ inputs.ref }}" --depth 1 --recurse-submodules \
             "https://codeberg.org/${{ inputs.repo }}.git" source
+
+      # Ported from the old GitHub-era Godot-Foundation-for-Steamworks
+      # build.yml — the Steamworks SDK is never committed anywhere (Valve's
+      # SDK license prohibits redistributing the SDK source/headers/import
+      # libs), fetched privately from a dedicated, access-locked repo via a
+      # fine-scoped PAT (Contents: read, scoped to that repo only).
+      - name: Fetch Steamworks SDK
+        if: inputs.fetch_steam_sdk == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.STEAM_SDK_FETCH_TOKEN }}
+        run: |
+          gh release download v1.63.0 \
+            --repo heathen-engineering/steamworks-sdk-vendor \
+            --pattern "steamworks-sdk.zip" \
+            --output steamworks-sdk.zip
+          mkdir -p "source/${{ inputs.addon_dir }}/include"
+          unzip -q steamworks-sdk.zip -d "source/${{ inputs.addon_dir }}/include"
+          rm steamworks-sdk.zip
 
       - name: Install Ninja
         run: brew install ninja
