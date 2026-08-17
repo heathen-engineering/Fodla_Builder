@@ -4,6 +4,14 @@ name: macOS build
 # someone (or our own tooling, via the same workflow_dispatch API) explicitly
 # asks for this exact repo/ref. Codeberg stays the source of truth; this repo
 # exists purely to reach a macOS compiler, nothing is authoritative here.
+#
+# Ninja + a Debug/Release matrix ported from the old GitHub-era
+# Godot-Foundation-for-Steamworks build.yml (the last known-working macOS
+# build for this product family) — that workflow used Ninja as the CMake
+# generator, which is what actually made its builds fast; the previous
+# version of this workflow used no generator override at all and took
+# 13+ minutes for something as small as xxHash on a cold, effectively
+# single-threaded default-Makefile build.
 on:
   workflow_dispatch:
     inputs:
@@ -19,45 +27,72 @@ on:
         default: "."
 
 jobs:
-  build-macos:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    name: Build (${{ matrix.build_type }})
     runs-on: macos-14
+
     steps:
       - name: Clone source from Codeberg
         run: |
           git clone --branch "${{ inputs.ref }}" --depth 1 --recurse-submodules \
             "https://codeberg.org/${{ inputs.repo }}.git" source
 
+      - name: Install Ninja
+        run: brew install ninja
+
       - name: Configure
         working-directory: source/${{ inputs.addon_dir }}
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release \
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_OSX_ARCHITECTURES="arm64;x86_64"
 
       - name: Build
         working-directory: source/${{ inputs.addon_dir }}
-        run: cmake --build build --config Release
+        run: cmake --build build
 
-      - name: Collect binaries
-        working-directory: source/${{ inputs.addon_dir }}
-        run: |
-          mkdir -p "${GITHUB_WORKSPACE}/artifacts"
-          # CMake links the real product output into a project-defined bin/
-          # folder at the addon root (LIBRARY_OUTPUT_DIRECTORY), a SIBLING of
-          # build/, not inside it — searching only "build" silently misses
-          # the real .dylib and picks up godot-cpp's own intermediate static
-          # lib from build/godot-cpp instead (confirmed the hard way against
-          # a real run: job succeeded, artifact uploaded, but it was
-          # libgodot-cpp's own .a, not the actual product). Search both.
-          find . -maxdepth 6 \( -name "*.dylib" -o -name "*.a" \) 2>/dev/null \
-            | grep -v '/build/godot-cpp/' \
-            | sort -u \
-            | while read -r f; do
-                cp "$f" "${GITHUB_WORKSPACE}/artifacts/"
-              done
-          ls -la "${GITHUB_WORKSPACE}/artifacts/"
-
-      - uses: actions/upload-artifact@v4
+      - name: Upload build type artifact
+        uses: actions/upload-artifact@v4
         with:
-          name: macos-build
-          path: artifacts/
+          name: macos-${{ matrix.build_type }}
+          # CMake links the real product output into bin/ at the addon
+          # root (LIBRARY_OUTPUT_DIRECTORY), a sibling of build/ — not
+          # inside it. Confirmed the hard way against a real run: searching
+          # only build/ silently collects godot-cpp's own intermediate
+          # static lib instead of the actual product.
+          path: source/${{ inputs.addon_dir }}/bin/*
           if-no-files-found: error
+
+  package:
+    name: Package (macOS slice)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download both build types
+        uses: actions/download-artifact@v4
+        with:
+          pattern: macos-*
+          path: artifacts
+          merge-multiple: true
+
+      # Only the macOS binaries — this repo has no Linux/Windows build of
+      # its own (those run on Codeberg's own Forgejo Actions, or locally).
+      # This zip is a fragment meant to be merged with those into a real
+      # Asset Store package, not a standalone release artifact by itself.
+      - name: Assemble macOS binary fragment
+        run: |
+          addon_name="$(basename "${{ inputs.addon_dir }}")"
+          mkdir -p "package/addons/${addon_name}/bin"
+          cp artifacts/* "package/addons/${addon_name}/bin/"
+          cd package && zip -r "../${addon_name}-macos.zip" addons
+
+      - name: Upload packaged fragment
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-package
+          path: "*-macos.zip"
