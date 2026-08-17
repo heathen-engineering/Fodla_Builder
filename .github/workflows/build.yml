@@ -25,6 +25,9 @@ on:
         description: "Path to the CMakeLists.txt directory, relative to repo root (e.g. addons/GameplayTagsFoundation, or . for a flat-layout repo like Game-Framework)"
         required: true
         default: "."
+      addon_name:
+        description: "Real addon folder name once installed (e.g. GameFrameworkFoundation) — NOT derived from addon_dir, since a flat-layout repo's addon_dir is just \".\""
+        required: true
 
 jobs:
   build:
@@ -56,6 +59,18 @@ jobs:
         working-directory: source/${{ inputs.addon_dir }}
         run: cmake --build build
 
+      # actions/upload-artifact rejects any path containing a literal "."
+      # or ".." path segment ("Invalid pattern ... Relative pathing '.' and
+      # '..' is not allowed") — confirmed the hard way: addon_dir="." (the
+      # flat-layout case) makes the naive `source/${{ inputs.addon_dir }}`
+      # interpolate to "source/.", which upload-artifact's glob validator
+      # then rejects outright, failing the whole job even though the build
+      # itself succeeded. Resolve to a real absolute path first so "." never
+      # appears literally in the glob passed to upload-artifact.
+      - name: Resolve bin directory
+        id: resolve
+        run: echo "bin_dir=$(cd "source/${{ inputs.addon_dir }}/bin" && pwd)" >> "$GITHUB_OUTPUT"
+
       - name: Upload build type artifact
         uses: actions/upload-artifact@v4
         with:
@@ -65,7 +80,7 @@ jobs:
           # inside it. Confirmed the hard way against a real run: searching
           # only build/ silently collects godot-cpp's own intermediate
           # static lib instead of the actual product.
-          path: source/${{ inputs.addon_dir }}/bin/*
+          path: ${{ steps.resolve.outputs.bin_dir }}/*
           if-no-files-found: error
 
   package:
@@ -86,10 +101,9 @@ jobs:
       # Asset Store package, not a standalone release artifact by itself.
       - name: Assemble macOS binary fragment
         run: |
-          addon_name="$(basename "${{ inputs.addon_dir }}")"
-          mkdir -p "package/addons/${addon_name}/bin"
-          cp artifacts/* "package/addons/${addon_name}/bin/"
-          cd package && zip -r "../${addon_name}-macos.zip" addons
+          mkdir -p "package/addons/${{ inputs.addon_name }}/bin"
+          cp artifacts/* "package/addons/${{ inputs.addon_name }}/bin/"
+          cd package && zip -r "../${{ inputs.addon_name }}-macos.zip" addons
 
       - name: Upload packaged fragment
         uses: actions/upload-artifact@v4
