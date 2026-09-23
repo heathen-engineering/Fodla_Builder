@@ -1,0 +1,70 @@
+name: iOS build
+
+# Manual only, same reasoning as build.yml (macOS build): nothing here builds
+# unless explicitly asked for via workflow_dispatch. Separate file from
+# build.yml deliberately — that workflow is shared with the Godot release
+# pipeline, this one is not, so it can iterate independently.
+#
+# iOS ships the STATIC gameframework target, not the shared one: dynamic
+# libraries aren't loadable the same way on iOS, and a static .a is what a
+# host engine's build links directly. Xcode is the CMake generator here
+# (not Ninja, unlike build.yml) since CMAKE_SYSTEM_NAME=iOS cross-compiling
+# needs Xcode's own toolchain resolution, a plain Ninja + clang invocation
+# doesn't pick up the iOS SDK/sysroot the way the Xcode generator does.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Codeberg repo path, e.g. Heathen-Engineering/Game-Framework"
+        required: true
+      ref:
+        description: "Git tag or branch to build"
+        required: true
+      addon_dir:
+        description: "Path to the CMakeLists.txt directory, relative to repo root (e.g. Core, or . for a flat-layout repo)"
+        required: true
+        default: "."
+      addon_name:
+        description: "Real addon folder name once installed (e.g. GameFrameworkFoundation)"
+        required: true
+      ios_deployment_target:
+        description: "Minimum iOS version to target"
+        required: false
+        default: "13.0"
+
+jobs:
+  build:
+    name: Build (Release, arm64)
+    runs-on: macos-14
+
+    steps:
+      - name: Clone source from Codeberg
+        run: |
+          git clone --branch "${{ inputs.ref }}" --depth 1 --recurse-submodules \
+            "https://codeberg.org/${{ inputs.repo }}.git" source
+
+      - name: Configure
+        working-directory: source/${{ inputs.addon_dir }}
+        run: |
+          cmake -S . -B build -G Xcode \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ inputs.ios_deployment_target }} \
+            -DGAMEFRAMEWORK_BUILD_TESTS=OFF
+
+      - name: Build
+        working-directory: source/${{ inputs.addon_dir }}
+        run: cmake --build build --config Release --target gameframework
+
+      # Same "." path-segment issue as build.yml's own Resolve step — resolve
+      # to a real absolute path before it reaches upload-artifact's glob.
+      - name: Resolve bin directory
+        id: resolve
+        run: echo "bin_dir=$(cd "source/${{ inputs.addon_dir }}/bin" && pwd)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload static lib artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-Release
+          path: ${{ steps.resolve.outputs.bin_dir }}/*
+          if-no-files-found: error
