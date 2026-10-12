@@ -41,13 +41,13 @@ jobs:
           git clone --branch "${{ inputs.ref }}" --depth 1 --recurse-submodules \
             "https://codeberg.org/${{ inputs.repo }}.git" source
 
-      - name: Install Ninja
-        run: brew install ninja
-
+      # The Xcode generator, not Ninja: CMAKE_SYSTEM_NAME=iOS needs Xcode's own SDK/sysroot resolution (Ninja plus
+      # a plain clang finds no iOS sysroot and fails on the first standard header, as ios-build.yml documents).
+      # CMAKE_BUILD_TYPE is still passed because the products name their output libraries from it.
       - name: Configure
         working-directory: source/${{ inputs.addon_dir }}
         run: |
-          cmake -S . -B build -G Ninja \
+          cmake -S . -B build -G Xcode \
             -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
             -DCMAKE_SYSTEM_NAME=iOS \
             -DCMAKE_OSX_ARCHITECTURES=arm64 \
@@ -56,11 +56,17 @@ jobs:
 
       - name: Build
         working-directory: source/${{ inputs.addon_dir }}
-        run: cmake --build build
+        run: cmake --build build --config ${{ matrix.build_type }}
 
-      - name: Resolve bin directory
+      # A multi-config generator drops outputs in a per-config subfolder (bin/Release-iphoneos/...): collect the
+      # product libraries by name into one flat folder, never godot-cpp's own intermediate archives.
+      - name: Collect product libraries
         id: resolve
-        run: echo "bin_dir=$(cd "source/${{ inputs.addon_dir }}/bin" && pwd)" >> "$GITHUB_OUTPUT"
+        run: |
+          mkdir -p collected
+          find "source/${{ inputs.addon_dir }}/bin" -name "lib*.ios.*.a" -exec cp {} collected/ \;
+          ls -la collected
+          echo "bin_dir=$(cd collected && pwd)" >> "$GITHUB_OUTPUT"
 
       - name: Upload build artifact
         uses: actions/upload-artifact@v4
