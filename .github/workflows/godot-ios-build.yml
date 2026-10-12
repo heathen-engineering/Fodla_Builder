@@ -56,7 +56,9 @@ jobs:
 
       - name: Build
         working-directory: source/${{ inputs.addon_dir }}
-        run: cmake --build build --config ${{ matrix.build_type }}
+        # Only the product's own (static) target: the project also defines a shared Core target that is not used on iOS
+        # and that Xcode would insist on code-signing. The addon's CMake target is named after the addon.
+        run: cmake --build build --config ${{ matrix.build_type }} --target ${{ inputs.addon_name }} -- CODE_SIGNING_ALLOWED=NO
 
       # A multi-config generator drops outputs in a per-config subfolder (bin/Release-iphoneos/...): collect the
       # product libraries by name into one flat folder, never godot-cpp's own intermediate archives.
