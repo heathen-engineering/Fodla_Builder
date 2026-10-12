@@ -28,6 +28,10 @@ on:
       addon_name:
         description: "Real addon folder name once installed (e.g. GameFrameworkFoundation) — NOT derived from addon_dir, since a flat-layout repo's addon_dir is just \".\""
         required: true
+      sdk_version:
+        description: "Tag of the steamworks-sdk-vendor release to fetch when fetch_steam_sdk is true (the SDK version the Foundation targets)"
+        required: false
+        default: "v1.64.0"
       fetch_steam_sdk:
         description: "Fetch the Steamworks SDK before configuring (only Foundation for Steamworks needs this — the SDK is Valve-licensed, never committed, fetched from the private steamworks-sdk-vendor repo)"
         required: false
@@ -59,7 +63,7 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.STEAM_SDK_FETCH_TOKEN }}
         run: |
-          gh release download v1.63.0 \
+          gh release download "${{ inputs.sdk_version }}" \
             --repo heathen-engineering/steamworks-sdk-vendor \
             --pattern "steamworks-sdk.zip" \
             --output steamworks-sdk.zip

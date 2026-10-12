@@ -1,0 +1,94 @@
+name: Godot iOS build
+
+# Manual only (see build.yml). Builds the Godot GDExtension for iOS: arm64, Debug and Release, as STATIC libraries
+# named the way the products' .gdextension files declare them (libXxx.ios.<debug|release>.arm64.a), which is what
+# a Godot iOS export links. ios-build.yml next to this file builds Game Framework's engine-agnostic Core for other
+# hosts; this one builds the Godot addons themselves. Foundation for Steamworks is not built here: Steam has no iOS SDK.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Codeberg repo path, e.g. Heathen-Engineering/Godot-Game-Framework"
+        required: true
+      ref:
+        description: "Git tag or branch to build"
+        required: true
+      addon_dir:
+        description: "Path to the CMakeLists.txt directory, relative to repo root (e.g. addons/GameplayTagsFoundation, or . for a flat-layout repo)"
+        required: true
+        default: "."
+      addon_name:
+        description: "Real addon folder name once installed (e.g. GameFrameworkFoundation); NOT derived from addon_dir"
+        required: true
+      ios_deployment_target:
+        description: "Minimum iOS version to target"
+        required: false
+        default: "13.0"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        build_type: [Debug, Release]
+
+    name: Build (arm64 ${{ matrix.build_type }})
+    runs-on: macos-14
+
+    steps:
+      - name: Clone source from Codeberg
+        run: |
+          git clone --branch "${{ inputs.ref }}" --depth 1 --recurse-submodules \
+            "https://codeberg.org/${{ inputs.repo }}.git" source
+
+      - name: Install Ninja
+        run: brew install ninja
+
+      - name: Configure
+        working-directory: source/${{ inputs.addon_dir }}
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_SYSTEM_NAME=iOS \
+            -DCMAKE_OSX_ARCHITECTURES=arm64 \
+            -DCMAKE_OSX_DEPLOYMENT_TARGET=${{ inputs.ios_deployment_target }} \
+            -DGAMEFRAMEWORK_BUILD_TESTS=OFF
+
+      - name: Build
+        working-directory: source/${{ inputs.addon_dir }}
+        run: cmake --build build
+
+      - name: Resolve bin directory
+        id: resolve
+        run: echo "bin_dir=$(cd "source/${{ inputs.addon_dir }}/bin" && pwd)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-${{ matrix.build_type }}
+          path: ${{ steps.resolve.outputs.bin_dir }}/*.a
+          if-no-files-found: error
+
+  package:
+    name: Package (iOS slice)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download both build types
+        uses: actions/download-artifact@v4
+        with:
+          pattern: ios-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Assemble iOS binary fragment
+        run: |
+          mkdir -p "package/addons/${{ inputs.addon_name }}/bin"
+          cp artifacts/* "package/addons/${{ inputs.addon_name }}/bin/"
+          cd package && zip -r "../${{ inputs.addon_name }}-ios.zip" addons
+
+      - name: Upload packaged fragment
+        uses: actions/upload-artifact@v4
+        with:
+          name: ios-package
+          path: "*-ios.zip"

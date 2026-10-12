@@ -1,0 +1,106 @@
+name: Android build
+
+# Manual only, same reasoning as build.yml (macOS build) and ios-build.yml: nothing here builds unless explicitly
+# asked for via workflow_dispatch against an exact Codeberg repo/ref. Codeberg stays the source of truth.
+#
+# Builds the Godot GDExtension for Android with the NDK that ships on GitHub's Ubuntu runners: arm64-v8a (arm64),
+# armeabi-v7a (arm32) and x86_64, each Debug and Release, named the way the products' .gdextension files declare them
+# (libXxx.android.<debug|release>.<arm64|arm32|x86_64>.so). The result is an Android fragment, merged into the
+# Asset Store package by docs/scripts/release-godot-addon.sh the same way the macOS fragment is.
+# Foundation for Steamworks is not built here: Steam has no Android SDK.
+on:
+  workflow_dispatch:
+    inputs:
+      repo:
+        description: "Codeberg repo path, e.g. Heathen-Engineering/Godot-Game-Framework"
+        required: true
+      ref:
+        description: "Git tag or branch to build"
+        required: true
+      addon_dir:
+        description: "Path to the CMakeLists.txt directory, relative to repo root (e.g. addons/GameplayTagsFoundation, or . for a flat-layout repo like Game Framework)"
+        required: true
+        default: "."
+      addon_name:
+        description: "Real addon folder name once installed (e.g. GameFrameworkFoundation); NOT derived from addon_dir"
+        required: true
+      android_platform:
+        description: "Minimum Android API level (Godot 4.x requires 24 or newer)"
+        required: false
+        default: "android-24"
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        abi: [arm64-v8a, armeabi-v7a, x86_64]
+        build_type: [Debug, Release]
+
+    name: Build (${{ matrix.abi }} ${{ matrix.build_type }})
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Clone source from Codeberg
+        run: |
+          git clone --branch "${{ inputs.ref }}" --depth 1 --recurse-submodules \
+            "https://codeberg.org/${{ inputs.repo }}.git" source
+
+      - name: Install Ninja
+        run: sudo apt-get update && sudo apt-get install -y ninja-build
+
+      - name: Configure
+        working-directory: source/${{ inputs.addon_dir }}
+        run: |
+          NDK="${ANDROID_NDK_LATEST_HOME:-${ANDROID_NDK_HOME:-${ANDROID_NDK_ROOT}}}"
+          echo "Using NDK: $NDK"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=${{ matrix.build_type }} \
+            -DCMAKE_TOOLCHAIN_FILE="$NDK/build/cmake/android.toolchain.cmake" \
+            -DANDROID_ABI=${{ matrix.abi }} \
+            -DANDROID_PLATFORM=${{ inputs.android_platform }}
+
+      - name: Build
+        working-directory: source/${{ inputs.addon_dir }}
+        run: cmake --build build
+
+      # See build.yml: upload-artifact rejects a literal "." path segment, so resolve to an absolute path first.
+      # Only the real product libraries are kept: dependents build a throwaway copy of Game Framework's
+      # libgameframework.* that must never ship (see release-godot-addon.sh).
+      - name: Resolve bin directory
+        id: resolve
+        run: echo "bin_dir=$(cd "source/${{ inputs.addon_dir }}/bin" && pwd)" >> "$GITHUB_OUTPUT"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-${{ matrix.abi }}-${{ matrix.build_type }}
+          path: ${{ steps.resolve.outputs.bin_dir }}/*.so
+          if-no-files-found: error
+
+  package:
+    name: Package (Android slice)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download every ABI and build type
+        uses: actions/download-artifact@v4
+        with:
+          pattern: android-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Assemble Android binary fragment
+        run: |
+          mkdir -p "package/addons/${{ inputs.addon_name }}/bin"
+          cp artifacts/* "package/addons/${{ inputs.addon_name }}/bin/"
+          if [ "${{ inputs.addon_name }}" != "GameFrameworkFoundation" ]; then
+            rm -f package/addons/${{ inputs.addon_name }}/bin/libgameframework.*
+          fi
+          cd package && zip -r "../${{ inputs.addon_name }}-android.zip" addons
+
+      - name: Upload packaged fragment
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-package
+          path: "*-android.zip"
